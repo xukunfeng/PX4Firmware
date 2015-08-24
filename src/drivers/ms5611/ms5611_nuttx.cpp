@@ -821,6 +821,7 @@ bool	start_bus(struct ms5611_bus_option &bus);
 struct ms5611_bus_option &find_bus(enum MS5611_BUS busid);
 void	start(enum MS5611_BUS busid);
 void	test(enum MS5611_BUS busid);
+void	factory_test(enum MS5611_BUS busid);
 void	reset(enum MS5611_BUS busid);
 void	info();
 void	calibrate(unsigned altitude, enum MS5611_BUS busid);
@@ -1136,7 +1137,82 @@ calibrate(unsigned altitude, enum MS5611_BUS busid)
 	close(fd);
 	exit(0);
 }
+/**
+ * Perform some basic functional tests on the driver;
+ * make sure we can collect data from the sensor in polled
+ * and automatic modes.
+ */
+void
+factory_test(enum MS5611_BUS busid ,long time)
+{
+    struct ms5611_bus_option &bus = find_bus(busid);
+    struct baro_report report;
+    ssize_t sz;
+    int ret;
 
+    int fd;
+
+
+    fd = open(bus.devpath, O_RDONLY);
+    if (fd < 0)
+        err(1, "open failed (try 'ms5611 start' if the driver is not running)");
+
+    /* set the queue depth to 10 */
+    if (OK != ioctl(fd, SENSORIOCSQUEUEDEPTH, 50))
+        errx(1, "failed to set queue depth");
+
+    /* start the sensor polling at 2Hz */
+    if (OK != ioctl(fd, SENSORIOCSPOLLRATE, 2))
+        errx(1, "failed to set 2Hz poll rate");
+	double num_total = 0,s = 0,num_total2 = 0;
+    /* read the sensor 5x and report each value */
+	unsigned  int count = 2 * 60 * (unsigned int)time ;
+	double min = 0.0 ,max = 0.0;
+    for (unsigned i = 0; i < count + 4 ; i++) {
+        struct pollfd fds;
+
+        /* wait for data to be ready */
+        fds.fd = fd;
+        fds.events = POLLIN;
+        ret = poll(&fds, 1, 2000);
+
+        if (ret != 1)
+            errx(1, "timed out waiting for sensor data");
+
+        /* now go get it */
+        sz = read(fd, &report, sizeof(report));
+
+        if (sz != sizeof(report))
+            err(1, "periodic read failed");
+
+		if( i < 4 ){
+			continue;
+		}
+		double altitude = (double) report.altitude;
+		num_total += altitude;
+		num_total2+= pow(altitude,2);
+
+		if( altitude -  max > 0){
+			max = altitude;
+		}
+
+		if( altitude - min < 0 || min - 0.0  <= 0){
+			min = altitude;
+		}
+
+//        warnx("periodic read %u", i);
+        warnx("%u :altitude:    %11.4f", i - 4, (double)report.altitude);
+//        warnx("time:        %lld", report.timestamp);
+    }
+	warnx("variance: %11.6f ", sqrt((num_total2+ count*pow(num_total/count,2) - 2*(num_total/count)*num_total)/ (count )));
+	warnx("mean: %11.4f ", num_total / count );
+	warnx("max: %11.4f ", max);
+	warnx("min: %11.4f ", min);
+
+
+    close(fd);
+    errx(0, "PASS");
+}
 void
 usage()
 {
@@ -1196,6 +1272,14 @@ ms5611_main(int argc, char *argv[])
 	 */
 	if (!strcmp(verb, "reset"))
 		ms5611::reset(busid);
+
+	if (!strcmp(verb, "factorytest")) {
+		if (argc < 2){
+			errx(1, "eg:ms5611 factorytest 10");
+		}
+		long time = strtol(argv[optind+1], nullptr, 10);
+		ms5611::factory_test(busid ,time);
+	}
 
 	/*
 	 * Print driver information.
